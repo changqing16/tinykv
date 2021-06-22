@@ -14,7 +14,9 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -50,13 +52,26 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
+	snapIndex uint64
+	snapTerm  uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	return nil
+	firstIndex, _ := storage.FirstIndex()
+	snapIndex := firstIndex - 1
+	snapTerm, _ := storage.Term(snapIndex)
+	lastIndex, _ := storage.LastIndex()
+	entries, _ := storage.Entries(firstIndex, lastIndex+1)
+	return &RaftLog{
+		storage:   storage,
+		stabled:   lastIndex,
+		entries:   entries,
+		snapIndex: snapIndex,
+		snapTerm:  snapTerm,
+	}
 }
 
 // We need to compact the log entries in some point of time like
@@ -69,23 +84,56 @@ func (l *RaftLog) maybeCompact() {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return nil
+	return l.entries[l.stabled-l.snapIndex:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return nil
+	ents = l.entries[l.applied-l.snapIndex : l.committed-l.snapIndex]
+	return ents
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return 0
+	return l.snapIndex + uint64(len(l.entries))
+}
+
+func (l *RaftLog) LastIndexTerm() (uint64, uint64) {
+	if len(l.entries) == 0 {
+		return l.snapIndex, l.snapTerm
+	}
+	last := l.entries[len(l.entries)-1]
+	return last.Index, last.Term
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	return 0, nil
+
+	if i < l.snapIndex {
+		return 0, ErrCompacted
+	} else if i == l.snapIndex {
+		return l.snapTerm, nil
+	}
+	if int(i-l.snapIndex) > len(l.entries) {
+		return 0, ErrUnavailable
+	}
+	return l.entries[i-l.snapIndex-1].Term, nil
+}
+
+func (l *RaftLog) getLogLocByIndex(i uint64) (int, error) {
+	if i <= l.snapIndex {
+		return 0, ErrCompacted
+	}
+	if int(i-l.snapIndex) > len(l.entries) {
+		return 0, ErrUnavailable
+	}
+	return int(i - l.snapIndex - 1), nil
+}
+
+func (l *RaftLog) removeConflict(index uint64) {
+	l.entries = l.entries[:index-l.snapIndex]
+	l.stabled = min(l.stabled, l.LastIndex())
 }
