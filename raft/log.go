@@ -64,7 +64,10 @@ func newLog(storage Storage) *RaftLog {
 	snapIndex := firstIndex - 1
 	snapTerm, _ := storage.Term(snapIndex)
 	lastIndex, _ := storage.LastIndex()
-	entries, _ := storage.Entries(firstIndex, lastIndex+1)
+	stored, _ := storage.Entries(firstIndex, lastIndex+1)
+	entries := make([]pb.Entry, 1, len(stored)+1)
+	entries[0] = pb.Entry{Index: snapIndex, Term: snapTerm}
+	entries = append(entries, stored...)
 	return &RaftLog{
 		storage:   storage,
 		stabled:   lastIndex,
@@ -86,31 +89,28 @@ func (l *RaftLog) maybeCompact() {
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return l.entries
+	return l.entries[1:]
 }
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return l.entries[l.stabled-l.snapIndex:]
+	return l.entries[l.stabled-l.snapIndex+1:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-	return l.entries[l.applied-l.snapIndex : l.committed-l.snapIndex]
+	return l.entries[l.applied-l.snapIndex+1 : l.committed-l.snapIndex+1]
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return l.snapIndex + uint64(len(l.entries))
+	return l.snapIndex + uint64(len(l.entries)) - 1
 }
 
 func (l *RaftLog) LastIndexTerm() (index, term uint64) {
-	if len(l.entries) == 0 {
-		return l.snapIndex, l.snapTerm
-	}
 	lastEntry := l.entries[len(l.entries)-1]
 	return lastEntry.Index, lastEntry.Term
 }
@@ -120,12 +120,10 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	if i < l.snapIndex {
 		return 0, ErrCompacted
-	} else if i == l.snapIndex {
-		return l.snapTerm, nil
-	} else if i-l.snapIndex > uint64(len(l.entries)) {
+	} else if i-l.snapIndex > uint64(len(l.entries)-1) {
 		return 0, ErrUnavailable
 	}
-	return l.entries[i-l.snapIndex-1].Term, nil
+	return l.entries[i-l.snapIndex].Term, nil
 }
 
 func (l *RaftLog) Entries(lo, hi uint64) ([]pb.Entry, error) {
@@ -137,20 +135,24 @@ func (l *RaftLog) Entries(lo, hi uint64) ([]pb.Entry, error) {
 	} else if hi > l.snapIndex+uint64(len(l.entries)) {
 		return nil, ErrUnavailable
 	}
-	return l.entries[lo-l.snapIndex-1 : hi-l.snapIndex-1], nil
+	return l.entries[lo-l.snapIndex : hi-l.snapIndex], nil
 }
 
-func (l *RaftLog) AppendEntries(entries []*pb.Entry, commited uint64) {
-	if len(entries) != 0 {
-		// index := len(l.entries) - 1
-		// for index > 0 && entries[0].Index < l.entries[index].Index {
-		// 	index--
-		// }
+func (l *RaftLog) AppendEntries(entries []*pb.Entry) {
+	for loc := 0; loc < len(entries); loc++ {
+		logTerm, err := l.Term(entries[loc].Index)
+		// Find first mismatch/notexist entry, then append two arrays
+		if err != nil || logTerm != entries[loc].Term {
+			stabledIndex := entries[loc].Index - 1
+			l.stabled = min(l.stabled, stabledIndex)
 
-		// l.entries = l.entries[:index]
-		for _, entry := range entries {
-			l.entries = append(l.entries, *entry)
+			entries = entries[loc:]
+			// If l.entries has more logs than entries, we won't remove them
+			l.entries = l.entries[0 : stabledIndex-l.snapIndex+1]
+			for _, ent := range entries {
+				l.entries = append(l.entries, *ent)
+			}
+			break
 		}
 	}
-	l.committed = min(commited, l.LastIndex())
 }
