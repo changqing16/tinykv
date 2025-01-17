@@ -75,7 +75,10 @@ type RawNode struct {
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
-	return nil, nil
+	raft := newRaft(config)
+	return &RawNode{
+		Raft: raft,
+	}, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -143,7 +146,25 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	return Ready{}
+	ready := Ready{}
+
+	entires, err := rn.Raft.RaftLog.Entries(rn.Raft.RaftLog.stabled+1, rn.Raft.RaftLog.LastIndex()+1)
+	if err != nil {
+		panic(err)
+	}
+	ready.Entries = entires
+
+	if rn.Raft.RaftLog.applied+1 < rn.Raft.RaftLog.committed+1 {
+		committedEntries, err := rn.Raft.RaftLog.Entries(rn.Raft.RaftLog.applied+1, rn.Raft.RaftLog.committed+1)
+		if err != nil {
+			panic(err)
+		}
+		ready.CommittedEntries = committedEntries
+	}
+	if len(rn.Raft.msgs) > 0 {
+		ready.Messages = rn.Raft.msgs
+	}
+	return ready
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
@@ -156,6 +177,12 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+	if len(rd.CommittedEntries) > 0 {
+		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+	}
+	if len(rd.Entries) > 0 {
+		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+	}
 }
 
 // GetProgress return the Progress of this node and its peers, if this

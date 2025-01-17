@@ -128,7 +128,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 
 func (l *RaftLog) Entries(lo, hi uint64) ([]pb.Entry, error) {
 	if lo >= hi {
-		return nil, nil
+		return []pb.Entry{}, nil
 	}
 	if lo <= l.snapIndex {
 		return nil, ErrCompacted
