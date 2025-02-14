@@ -168,30 +168,38 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
+
+	r := &Raft{
+		id:                  c.ID,
+		RaftLog:             newLog(c.Storage),
+		State:               StateFollower,
+		votes:               make(map[uint64]bool),
+		heartbeatTimeout:    c.HeartbeatTick,
+		electionTimeoutBase: c.ElectionTick,
+	}
+	r.RaftLog.applied = c.Applied
+
+	hardState, confState, err := c.Storage.InitialState()
+	if err != nil {
+		panic(err)
+	}
+	r.Vote = hardState.Vote
+	r.Term = hardState.Term
+	r.RaftLog.committed = hardState.Commit
+
 	prs := make(map[uint64]*Progress)
 	for _, peer := range c.peers {
 		prs[peer] = &Progress{
 			Next: 1,
 		}
 	}
+	for _, peer := range confState.Nodes {
+		prs[peer] = &Progress{
+			Next: 1,
+		}
+	}
+	r.Prs = prs
 
-	r := &Raft{
-		id:                  c.ID,
-		RaftLog:             newLog(c.Storage),
-		Prs:                 prs,
-		State:               StateFollower,
-		votes:               make(map[uint64]bool),
-		msgs:                make([]pb.Message, 0),
-		heartbeatTimeout:    c.HeartbeatTick,
-		electionTimeoutBase: c.ElectionTick,
-	}
-	hardState, _, err := c.Storage.InitialState()
-	if err == nil {
-		r.Vote = hardState.Vote
-		r.Term = hardState.Term
-		r.RaftLog.committed = hardState.Commit
-	}
-	r.RaftLog.applied = c.Applied
 	r.resetElectionTimeout()
 	return r
 }
@@ -643,4 +651,19 @@ func (r *Raft) addNode(id uint64) {
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+}
+
+func (r *Raft) HardState() pb.HardState {
+	return pb.HardState{
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
+	}
+}
+
+func (r *Raft) SoftState() *SoftState {
+	return &SoftState{
+		Lead:      r.Lead,
+		RaftState: r.State,
+	}
 }
