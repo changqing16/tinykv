@@ -61,7 +61,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	d.RaftGroup.Advance(ready)
 }
 
-func (d *peer) getProposal(index uint64) (result *proposal) {
+func (d *peerMsgHandler) getProposal(index uint64) (result *proposal) {
 	for i := 0; i < len(d.proposals); i++ {
 		if d.proposals[i].index == index {
 			result = d.proposals[i]
@@ -72,11 +72,12 @@ func (d *peer) getProposal(index uint64) (result *proposal) {
 	return result
 }
 
-func (d *peer) applyCommand(entry eraftpb.Entry) (resp *raft_cmdpb.RaftCmdResponse, txn *badger.Txn, err error) {
+func (d *peerMsgHandler) applyCommand(entry eraftpb.Entry) (resp *raft_cmdpb.RaftCmdResponse, txn *badger.Txn, err error) {
 	resp = new(raft_cmdpb.RaftCmdResponse)
 	resp.Header = &raft_cmdpb.RaftResponseHeader{
 		CurrentTerm: d.Term(),
 	}
+	kvWB := new(engine_util.WriteBatch)
 	switch entry.EntryType {
 	case eraftpb.EntryType_EntryNormal:
 		msg := &raft_cmdpb.RaftCmdRequest{}
@@ -85,7 +86,6 @@ func (d *peer) applyCommand(entry eraftpb.Entry) (resp *raft_cmdpb.RaftCmdRespon
 			return resp, txn, err
 		}
 
-		kvWB := new(engine_util.WriteBatch)
 		for _, req := range msg.Requests {
 			switch req.CmdType {
 			case raft_cmdpb.CmdType_Get:
@@ -119,12 +119,8 @@ func (d *peer) applyCommand(entry eraftpb.Entry) (resp *raft_cmdpb.RaftCmdRespon
 				txn = d.peerStorage.Engines.Kv.NewTransaction(false)
 			}
 		}
-		d.peerStorage.applyState.AppliedIndex = entry.Index
-		kvWB.SetMeta(meta.ApplyStateKey(d.peerStorage.region.Id), d.peerStorage.applyState)
-		d.peerStorage.Engines.WriteKV(kvWB)
 
 		if msg.AdminRequest != nil {
-			fmt.Printf("got AdminRequest, type: %v\n", msg.AdminRequest.CmdType)
 			switch msg.AdminRequest.CmdType {
 			case raft_cmdpb.AdminCmdType_ChangePeer:
 				// switch msg.AdminRequest.ChangePeer.ChangeType {
@@ -135,6 +131,12 @@ func (d *peer) applyCommand(entry eraftpb.Entry) (resp *raft_cmdpb.RaftCmdRespon
 				// }
 
 			case raft_cmdpb.AdminCmdType_CompactLog:
+				compactIndex := msg.AdminRequest.CompactLog.CompactIndex
+				if compactIndex > d.LastCompactedIdx {
+					d.peerStorage.applyState.TruncatedState.Index = compactIndex
+					d.peerStorage.applyState.TruncatedState.Term = msg.AdminRequest.CompactLog.CompactTerm
+					d.ScheduleCompactLog(compactIndex)
+				}
 			case raft_cmdpb.AdminCmdType_TransferLeader:
 			case raft_cmdpb.AdminCmdType_Split:
 			}
@@ -146,10 +148,14 @@ func (d *peer) applyCommand(entry eraftpb.Entry) (resp *raft_cmdpb.RaftCmdRespon
 
 		// d.RaftGroup.ApplyConfChange(msg)
 	}
+
+	d.peerStorage.applyState.AppliedIndex = entry.Index
+	kvWB.SetMeta(meta.ApplyStateKey(d.peerStorage.region.Id), d.peerStorage.applyState)
+	d.peerStorage.Engines.WriteKV(kvWB)
 	return resp, txn, err
 }
 
-func (d *peer) applyCommittedEntries(entries []eraftpb.Entry) {
+func (d *peerMsgHandler) applyCommittedEntries(entries []eraftpb.Entry) {
 	for _, entry := range entries {
 		proposal := d.getProposal(entry.Index)
 		if proposal != nil && proposal.term != entry.Term {
@@ -260,12 +266,13 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
-
-	d.proposals = append(d.proposals, &proposal{
-		index: d.nextProposalIndex(),
-		term:  d.Term(),
-		cb:    cb,
-	})
+	if cb != nil {
+		d.proposals = append(d.proposals, &proposal{
+			index: d.nextProposalIndex(),
+			term:  d.Term(),
+			cb:    cb,
+		})
+	}
 	err = d.RaftGroup.Propose(data)
 	if err != nil {
 		cb.Done(ErrResp(err))

@@ -15,6 +15,7 @@
 package raft
 
 import (
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -52,8 +53,6 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
-	snapIndex uint64
-	snapTerm  uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
@@ -63,17 +62,23 @@ func newLog(storage Storage) *RaftLog {
 	firstIndex, _ := storage.FirstIndex()
 	snapIndex := firstIndex - 1
 	snapTerm, _ := storage.Term(snapIndex)
-	lastIndex, _ := storage.LastIndex()
-	stored, _ := storage.Entries(firstIndex, lastIndex+1)
-	entries := make([]pb.Entry, 1, len(stored)+1)
+	stabledIndex, _ := storage.LastIndex()
+	var entries []pb.Entry
+	stored, err := storage.Entries(firstIndex, stabledIndex+1)
+	if err != nil {
+		log.Errorf("get entries from storage failed, err: %v", err)
+		stabledIndex = snapIndex
+	}
+	entries = make([]pb.Entry, 1, len(stored)+1)
 	entries[0] = pb.Entry{Index: snapIndex, Term: snapTerm}
 	entries = append(entries, stored...)
+
 	return &RaftLog{
-		storage:   storage,
-		stabled:   lastIndex,
-		entries:   entries,
-		snapIndex: snapIndex,
-		snapTerm:  snapTerm,
+		storage: storage,
+		stabled: stabledIndex,
+		entries: entries,
+		// snapIndex: snapIndex,
+		// snapTerm:  snapTerm,
 	}
 }
 
@@ -82,6 +87,14 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	firstIndex, err := l.storage.FirstIndex()
+	if err != nil {
+		return
+	}
+	snapIndex := firstIndex - 1
+	if snapIndex > l.snapIndex() {
+		l.entries = l.entries[snapIndex-l.snapIndex():]
+	}
 }
 
 // allEntries return all the entries not compacted.
@@ -95,14 +108,15 @@ func (l *RaftLog) allEntries() []pb.Entry {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return l.entries[l.stabled-l.snapIndex+1:]
+	return l.entries[l.stabled-l.snapIndex()+1:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
+	snapIndex := l.entries[0].Index
 	if l.applied < l.committed {
-		return l.entries[l.applied-l.snapIndex+1 : l.committed-l.snapIndex+1]
+		return l.entries[l.applied-snapIndex+1 : l.committed-snapIndex+1]
 	}
 	return nil
 }
@@ -110,7 +124,7 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// Your Code Here (2A).
-	return l.snapIndex + uint64(len(l.entries)) - 1
+	return l.entries[0].Index + uint64(len(l.entries)) - 1
 }
 
 func (l *RaftLog) LastIndexTerm() (index, term uint64) {
@@ -121,24 +135,25 @@ func (l *RaftLog) LastIndexTerm() (index, term uint64) {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	if i < l.snapIndex {
+	if i < l.entries[0].Index {
 		return 0, ErrCompacted
-	} else if i-l.snapIndex > uint64(len(l.entries)-1) {
+	} else if i-l.entries[0].Index > uint64(len(l.entries)-1) {
 		return 0, ErrUnavailable
 	}
-	return l.entries[i-l.snapIndex].Term, nil
+	return l.entries[i-l.entries[0].Index].Term, nil
 }
 
 func (l *RaftLog) Entries(lo, hi uint64) ([]pb.Entry, error) {
+	snapIndex := l.entries[0].Index
 	if lo >= hi {
 		return []pb.Entry{}, nil
 	}
-	if lo <= l.snapIndex {
+	if lo <= snapIndex {
 		return nil, ErrCompacted
-	} else if hi > l.snapIndex+uint64(len(l.entries)) {
+	} else if hi > l.entries[0].Index+uint64(len(l.entries)) {
 		return nil, ErrUnavailable
 	}
-	return l.entries[lo-l.snapIndex : hi-l.snapIndex], nil
+	return l.entries[lo-l.entries[0].Index : hi-l.entries[0].Index], nil
 }
 
 func (l *RaftLog) AppendEntries(entries []*pb.Entry) {
@@ -151,11 +166,18 @@ func (l *RaftLog) AppendEntries(entries []*pb.Entry) {
 
 			entries = entries[loc:]
 			// If l.entries has more logs than entries, we won't remove them
-			l.entries = l.entries[0 : stabledIndex-l.snapIndex+1]
+			l.entries = l.entries[0 : stabledIndex-l.snapIndex()+1]
 			for _, ent := range entries {
 				l.entries = append(l.entries, *ent)
 			}
 			break
 		}
 	}
+}
+
+func (l *RaftLog) snapIndex() uint64 {
+	if len(l.entries) == 0 {
+		return 0
+	}
+	return l.entries[0].Index
 }
