@@ -87,7 +87,7 @@ func NewReaderImpl(txn *badger.Txn) storage.StorageReader {
 
 func (r *readerImpl) GetCF(cf string, key []byte) ([]byte, error) {
 	value, err := engine_util.GetCFFromTxn(r.txn, cf, key)
-	if err == badger.ErrKeyNotFound {
+	if errors.Is(err, badger.ErrKeyNotFound) {
 		err = nil
 	}
 	return value, err

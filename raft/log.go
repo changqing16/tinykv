@@ -15,7 +15,6 @@
 package raft
 
 import (
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -46,7 +45,7 @@ type RaftLog struct {
 	stabled uint64
 
 	// all entries that have not yet compact.
-	entries []pb.Entry
+	entries []pb.Entry // index start from 1, 0 is compacted
 
 	// the incoming unstable snapshot, if any.
 	// (Used in 2C)
@@ -59,15 +58,24 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-	firstIndex, _ := storage.FirstIndex()
+	firstIndex, err := storage.FirstIndex()
+	if err != nil {
+		panic(err)
+	}
 	snapIndex := firstIndex - 1
-	snapTerm, _ := storage.Term(snapIndex)
-	stabledIndex, _ := storage.LastIndex()
+	snapTerm, err := storage.Term(snapIndex)
+	if err != nil {
+		panic(err)
+	}
+
+	stabledIndex, err := storage.LastIndex()
+	if err != nil {
+		panic(err)
+	}
 	var entries []pb.Entry
 	stored, err := storage.Entries(firstIndex, stabledIndex+1)
 	if err != nil {
-		log.Errorf("get entries from storage failed, err: %v", err)
-		stabledIndex = snapIndex
+		panic(err)
 	}
 	entries = make([]pb.Entry, 1, len(stored)+1)
 	entries[0] = pb.Entry{Index: snapIndex, Term: snapTerm}
@@ -77,8 +85,6 @@ func newLog(storage Storage) *RaftLog {
 		storage: storage,
 		stabled: stabledIndex,
 		entries: entries,
-		// snapIndex: snapIndex,
-		// snapTerm:  snapTerm,
 	}
 }
 
@@ -135,25 +141,28 @@ func (l *RaftLog) LastIndexTerm() (index, term uint64) {
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
-	if i < l.entries[0].Index {
+	snapIndex := l.entries[0].Index
+	if i < snapIndex {
 		return 0, ErrCompacted
-	} else if i-l.entries[0].Index > uint64(len(l.entries)-1) {
+	} else if i > snapIndex+uint64(len(l.entries))-1 {
 		return 0, ErrUnavailable
 	}
-	return l.entries[i-l.entries[0].Index].Term, nil
+	return l.entries[i-snapIndex].Term, nil
 }
 
 func (l *RaftLog) Entries(lo, hi uint64) ([]pb.Entry, error) {
-	snapIndex := l.entries[0].Index
-	if lo >= hi {
+	if lo == hi {
 		return []pb.Entry{}, nil
-	}
-	if lo <= snapIndex {
-		return nil, ErrCompacted
-	} else if hi > l.entries[0].Index+uint64(len(l.entries)) {
+	} else if lo > hi {
 		return nil, ErrUnavailable
 	}
-	return l.entries[lo-l.entries[0].Index : hi-l.entries[0].Index], nil
+	snapIndex := l.entries[0].Index
+	if lo <= snapIndex {
+		return nil, ErrCompacted
+	} else if hi > snapIndex+uint64(len(l.entries)) {
+		return nil, ErrUnavailable
+	}
+	return l.entries[lo-snapIndex : hi-snapIndex], nil
 }
 
 func (l *RaftLog) AppendEntries(entries []*pb.Entry) {
@@ -176,8 +185,5 @@ func (l *RaftLog) AppendEntries(entries []*pb.Entry) {
 }
 
 func (l *RaftLog) snapIndex() uint64 {
-	if len(l.entries) == 0 {
-		return 0
-	}
 	return l.entries[0].Index
 }

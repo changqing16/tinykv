@@ -5,3 +5,8 @@ unikv/unikv
 bin/*
 _tools
 /vendor
+log/
+main.go
+output.log
+test2b.sh
+.out
