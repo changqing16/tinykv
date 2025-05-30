@@ -300,9 +300,15 @@ func (d *peerMsgHandler) applyConfChange(data eraftpb.ConfChange, peer *metapb.P
 	storeMeta.regions[region.Id] = region
 	storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
 	storeMeta.Unlock()
-	log.Infof("%s, nodeId: %d, conf updated, ConfVer: %d, type: %v, len of peers: %d",
-		d.Tag, data.NodeId, region.RegionEpoch.ConfVer, data.ChangeType, len(region.Peers))
-
+	if d.IsLeader() {
+		peers := make([]uint64, 0, len(region.Peers))
+		for _, peer := range region.Peers {
+			peers = append(peers, peer.Id)
+		}
+		slices.Sort(peers)
+		log.Infof("%s, ConfVer:%d, type:%v:<%d,%d,%d>, peers:%d",
+			d.Tag, region.RegionEpoch.ConfVer, data.ChangeType, d.regionId, peer.StoreId, peer.Id, peers)
+	}
 	d.RaftGroup.ApplyConfChange(data)
 
 	meta.WriteRegionState(kvWB, region, rspb.PeerState_Normal)
@@ -349,7 +355,7 @@ func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 		d.onTick()
 	case message.MsgTypeSplitRegion:
 		split := msg.Data.(*message.MsgSplitRegion)
-		log.Infof("%s on split with %v", d.Tag, string(split.SplitKey))
+		log.Infof("%s on split with \"%s\"", d.Tag, string(split.SplitKey))
 		d.onPrepareSplitRegion(split.RegionEpoch, split.SplitKey, split.Callback)
 	case message.MsgTypeRegionApproximateSize:
 		d.onApproximateRegionSize(msg.Data.(uint64))

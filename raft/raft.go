@@ -17,6 +17,7 @@ package raft
 import (
 	"errors"
 	"math/rand"
+	"slices"
 
 	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -52,6 +53,9 @@ var ErrProposalDropped = errors.New("raft proposal dropped")
 type Config struct {
 	// ID is the identity of the local raft. ID cannot be 0.
 	ID uint64
+
+	// Tag which is useful for printing log
+	Tag string
 
 	// peers contains the IDs of all nodes (including self) in the raft cluster. It
 	// should only be set when starting a new raft cluster. Restarting raft from
@@ -111,6 +115,8 @@ type Progress struct {
 
 type Raft struct {
 	id uint64
+	// Tag which is useful for printing log
+	Tag string
 
 	Term uint64
 	Vote uint64
@@ -173,6 +179,7 @@ func newRaft(c *Config) *Raft {
 
 	r := &Raft{
 		id:                  c.ID,
+		Tag:                 c.Tag,
 		RaftLog:             newLog(c.Storage),
 		State:               StateFollower,
 		votes:               make(map[uint64]bool),
@@ -204,7 +211,6 @@ func newRaft(c *Config) *Raft {
 	r.Prs = prs
 
 	r.resetElectionTimeout()
-	log.Infof("%d created with peers: %v", r.id, len(r.Prs))
 	return r
 }
 
@@ -220,8 +226,8 @@ func (r *Raft) sendAppend(to uint64) bool {
 	// can send empty entries to update peer Commit and Next index
 	entries, err := r.RaftLog.Entries(progress.Next, r.RaftLog.LastIndex()+1)
 	if err != nil {
-		log.Errorf("%d, get sendAppend entires failed, progress.Next: %d, lastIndex+1: %d, err: %v",
-			r.id, progress.Next, r.RaftLog.LastIndex()+1, err)
+		log.Errorf("%s, get sendAppend entires failed, progress.Next: %d, lastIndex+1: %d, err: %v",
+			r.Tag, progress.Next, r.RaftLog.LastIndex()+1, err)
 		return false
 	}
 	ptrEntries := make([]*pb.Entry, 0, len(entries))
@@ -230,8 +236,8 @@ func (r *Raft) sendAppend(to uint64) bool {
 	}
 	prevLogTerm, err := r.RaftLog.Term(progress.Next - 1)
 	if err != nil {
-		log.Errorf("%d, get prevLogTerm failed, progress.Next-1: %d, lastIndex: %d, err: %v",
-			r.id, progress.Next-1, r.RaftLog.LastIndex(), err)
+		log.Errorf("%s, get prevLogTerm failed, progress.Next-1: %d, lastIndex: %d, err: %v",
+			r.Tag, progress.Next-1, r.RaftLog.LastIndex(), err)
 		return false
 	}
 	r.msgs = append(r.msgs, pb.Message{
@@ -358,7 +364,12 @@ func (r *Raft) sendRequestVote() {
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
-	log.Infof("%d becomeLeader\n", r.id)
+	peers := make([]uint64, 0, len(r.Prs))
+	for key := range r.Prs {
+		peers = append(peers, key)
+	}
+	slices.Sort(peers)
+	log.Infof("%s becomeLeader, term:%d, peers:%v", r.Tag, r.Term, peers)
 	r.State = StateLeader
 	r.Lead = r.id
 	lastIndex := r.RaftLog.LastIndex()
