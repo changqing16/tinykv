@@ -52,11 +52,11 @@ func (server *Server) RawDelete(_ context.Context, req *kvrpcpb.RawDeleteRequest
 	// Your Code Here (1).
 	// Hint: Consider using Storage.Modify to store data to be deleted
 	resp := &kvrpcpb.RawDeleteResponse{}
-	delete := storage.Delete{
+	del := storage.Delete{
 		Key: req.Key,
 		Cf:  req.Cf,
 	}
-	err := server.storage.Write(req.Context, []storage.Modify{{Data: delete}})
+	err := server.storage.Write(req.Context, []storage.Modify{{Data: del}})
 	if err != nil {
 		resp.Error = err.Error()
 	}
